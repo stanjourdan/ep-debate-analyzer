@@ -122,12 +122,15 @@ def generate_summary(system_prompt, user_prompt, model):
 # ==========================================
 # MAIN PIPELINE
 # ==========================================
-def main():
+def main(xml_urls=None, policy_priorities=None):
     # --- General configuration ---
-    raw_urls = input("""📝 Provide URLs of europarl XML files (separated by spaces or comma): """)
-    xml_urls = [url.strip() for url in raw_urls.replace(',', ' ').split() if url.strip()]
+    if xml_urls is None:
+        raw_urls = input("""📝 Provide URLs of europarl XML files (separated by spaces or comma): """)
+        xml_urls = [url.strip() for url in raw_urls.replace(',', ' ').split() if url.strip()]
     # Example of expected URL: https://www.europarl.europa.eu/doceo/document/CRE-10-2026-02-12-ITM-009_EN.xml
-    policy_priorities = input("""What is the policy focus? """)
+    
+    if policy_priorities is None:
+        policy_priorities = input("""What is the policy focus? """)
     
     # Configuration
     base_path = os.path.dirname(os.path.abspath(__file__))
@@ -158,32 +161,44 @@ def main():
         if not xml_content: continue
         xml_tree = parse_xml(xml_content)
         
+
         # Retrieve raw speech blocks
-        all_speechs_xml = xml_tree.xpath(".//*[local-name()='INTERVENTION']")
-        
-        # --- STEP 1: Detect Written Statements (Rule 178) marker ---
-        in_written_statements = False
+        all_interventions = xml_tree.xpath(".//*[local-name()='INTERVENTION']")
+        # --- STEP 1: Detect Written Statements (Rule 178) marker using document position ---
         verbal_interventions = []
         written_statements_data = []
         
-        for intervention in all_speechs_xml:
-            # Check if this intervention contains the written statements marker
-            emphas_nodes = intervention.xpath(".//EMPHAS[@NAME='I']")
-            is_written_marker = any(
-                node.text and "Written Statements (Rule 178)" in node.text 
-                for node in emphas_nodes
-            )
-            
-            if is_written_marker:
-                in_written_statements = True
-                continue  # Skip the marker intervention itself
-            
-            if in_written_statements:
-                written_statements_data.append(intervention)
-            else:
-                verbal_interventions.append(intervention)
+        # Get ALL elements to track document position
+        all_elements = xml_tree.xpath(".//*")
+        written_statement_para_position = None
         
-        # Use only verbal interventions for processing
+        # Find the position of the "Written Statements (Rule 178)" PARA in document order
+        for idx, element in enumerate(all_elements):
+            if element.tag.endswith('PARA') or element.tag == 'PARA':
+                all_text = etree.tostring(element, encoding='unicode', method='text')
+                if "Written Statements (Rule 178)" in all_text:
+                    written_statement_para_position = idx
+                    break
+        
+        # Classify interventions based on document position
+        if written_statement_para_position is not None:
+            # An intervention is "written statement" if it appears AFTER the marker in document order
+            for intervention in all_interventions:
+                intervention_position = None
+                for idx, element in enumerate(all_elements):
+                    if element is intervention:
+                        intervention_position = idx
+                        break
+                
+                if intervention_position is not None and intervention_position > written_statement_para_position:
+                    written_statements_data.append(intervention)
+                else:
+                    verbal_interventions.append(intervention)
+        else:
+            # Fallback: if marker not found, all are treated as verbal
+            verbal_interventions = list(all_interventions)
+        
+        # Only process verbal interventions for transcript/summary
         all_speechs_xml = verbal_interventions
         
         # Create debate metadata dictionary
@@ -205,15 +220,13 @@ def main():
         
         for bloc in all_speechs_xml:
             speaker_nodes = bloc.xpath(".//*[local-name()='ORATEUR']")
-            if not speaker_nodes: continue
+            if not speaker_nodes:
+                continue
             speaker_node = speaker_nodes[0]
-            
             mepid = speaker_node.get("MEPID")
             lang = speaker_node.get("LG", "EN")
-            
             raw_role = speaker_node.get("SPEAKER_TYPE", "").strip()
             role = "Group spokesperson" if raw_role.lower() == "au nom du groupe" else raw_role
-            
             # Match with MEP database
             if mepid and mepid in meps_db:
                 fullname = meps_db[mepid]["FullName"]
@@ -223,11 +236,9 @@ def main():
                 fullname = speaker_node.get("LIB", "Unknown")
                 politicalgroup = speaker_node.get("PP", "Unknown")
                 country = "n/a"
-                
             # Extract and clean text content
             paras = bloc.xpath(".//PARA")
             cleaned_paras = []
-            
             for p in paras:
                 text_parts = []
                 for node in p.xpath("node()"):
@@ -237,13 +248,9 @@ def main():
                         text_parts.append("".join(node.itertext()))
                     else:
                         text_parts.append(str(node))
-                
                 cleaned_paras.append("".join(text_parts))
-
             text_content = " ".join(cleaned_paras).strip()
-            
             text_content = re.sub(r'^[\s\.\–\-]+', '', text_content).strip()
-            
             if fullname and text_content:
                 full_speechs_dict.append({
                     "Fullname": fullname,
@@ -432,7 +439,42 @@ def main():
                 f.write(f"**Note:** {written_statements_count} written statement(s) submitted by {authors_text}. "
                         f"[Read the statements here]({html_url})\n")
 
+
         print(f"\n🎉 SUCCESS ! The summary is saved here : {filepath_summary}")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='European Parliament Debate Analyzer - Process plenary debate XML files',
+        epilog='Examples:\n'
+               '  python parliament_debate_analyzer.py\n'
+               '  python parliament_debate_analyzer.py --urls "https://...xml" "https://...xml" --policy "Climate"\n'
+               '  python parliament_debate_analyzer.py --batch urls.txt --policy "Healthcare"',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument('--urls', nargs='+', help='Space-separated list of XML URLs to process')
+    parser.add_argument('--batch', type=str, help='Path to file containing one URL per line')
+    parser.add_argument('--policy', type=str, default='General', help='Policy focus for analysis (default: General)')
+    parser.add_argument('--summary-only', action='store_true', help='Only generate summaries, skip Ollama synthesis')
+    
+    args = parser.parse_args()
+    
+    # Determine how to get URLs
+    if args.urls:
+        print(f"📋 Processing {len(args.urls)} URL(s) from command line")
+        main(xml_urls=args.urls, policy_priorities=args.policy)
+    elif args.batch:
+        try:
+            with open(args.batch, 'r') as f:
+                xml_urls = [line.strip() for line in f if line.strip()]
+            print(f"📋 Processing {len(xml_urls)} URL(s) from batch file: {args.batch}")
+            main(xml_urls=xml_urls, policy_priorities=args.policy)
+        except FileNotFoundError:
+            print(f"❌ Batch file not found: {args.batch}")
+            sys.exit(1)
+    else:
+        # Interactive mode - main() will ask for input
+        main()
