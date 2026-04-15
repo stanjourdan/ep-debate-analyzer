@@ -1,5 +1,5 @@
 """
-Plenary Debate Analysis Pipeline
+Plenary Debate Analysis
 Extracts, translates, and analyzes European Parliament plenary debates.
 
 Workflow:
@@ -161,6 +161,31 @@ def main():
         # Retrieve raw speech blocks
         all_speechs_xml = xml_tree.xpath(".//*[local-name()='INTERVENTION']")
         
+        # --- STEP 1: Detect Written Statements (Rule 178) marker ---
+        in_written_statements = False
+        verbal_interventions = []
+        written_statements_data = []
+        
+        for intervention in all_speechs_xml:
+            # Check if this intervention contains the written statements marker
+            emphas_nodes = intervention.xpath(".//EMPHAS[@NAME='I']")
+            is_written_marker = any(
+                node.text and "Written Statements (Rule 178)" in node.text 
+                for node in emphas_nodes
+            )
+            
+            if is_written_marker:
+                in_written_statements = True
+                continue  # Skip the marker intervention itself
+            
+            if in_written_statements:
+                written_statements_data.append(intervention)
+            else:
+                verbal_interventions.append(intervention)
+        
+        # Use only verbal interventions for processing
+        all_speechs_xml = verbal_interventions
+        
         # Create debate metadata dictionary
         title_node = xml_tree.find("TL-CHAP[@VL='EN']")
         debate_title = title_node.text if title_node is not None else "Untitled_Debate"
@@ -228,6 +253,25 @@ def main():
                     "role": role,
                     "text": text_content
                 })
+        
+        # --- Extract Written Statements authors ---
+        written_mep_authors = set()
+        for bloc in written_statements_data:
+            speaker_nodes = bloc.xpath(".//*[local-name()='ORATEUR']")
+            if speaker_nodes:
+                speaker_node = speaker_nodes[0]
+                mepid = speaker_node.get("MEPID")
+                
+                if mepid and mepid in meps_db:
+                    written_mep_authors.add(meps_db[mepid]["FullName"])
+                else:
+                    fullname_alt = speaker_node.get("LIB", "Unknown")
+                    if fullname_alt and fullname_alt != "Unknown":
+                        written_mep_authors.add(fullname_alt)
+        
+        written_mep_authors = sorted(list(written_mep_authors))
+        written_statements_count = len(written_statements_data)
+        
         start_time = time.time()
 
         # --- Phase 3: Selective translation ---
@@ -287,6 +331,14 @@ def main():
                 if speech['lang'] != "EN":
                     f.write(f"(Original language: {speech['lang']})\n\n")
                 f.write("---\n\n")
+            
+            # --- Add Written Statements footer ---
+            if written_statements_count > 0:
+                html_url = xml_url.replace('.xml', '.html')
+                authors_text = ", ".join(written_mep_authors)
+                f.write("---\n\n")
+                f.write(f"**Note:** {written_statements_count} written statement(s) submitted by {authors_text}. "
+                        f"[Read the statements here]({html_url})\n")
 
         print(f"💾 Saving transcript: {os.path.basename(filepath_transcript)}")
       
@@ -371,6 +423,14 @@ def main():
             
             f.write("### 2. Detailed speeches per group\n")
             f.write(f"{mini_summaries}\n")
+            
+            # --- Add Written Statements footer ---
+            if written_statements_count > 0:
+                html_url = xml_url.replace('.xml', '.html')
+                authors_text = ", ".join(written_mep_authors)
+                f.write("---\n\n")
+                f.write(f"**Note:** {written_statements_count} written statement(s) submitted by {authors_text}. "
+                        f"[Read the statements here]({html_url})\n")
 
         print(f"\n🎉 SUCCESS ! The summary is saved here : {filepath_summary}")
 
