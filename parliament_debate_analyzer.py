@@ -45,6 +45,34 @@ def parse_xml(xml_content):
         print(f"❌ Parsing failure: {e}")
         return None
 
+def get_or_download_meps_database(base_path):
+    """
+    Download MEP database from GitHub and cache locally.
+    Returns path to the MEP XML file.
+    """
+    cache_dir = os.path.join(base_path, '.meps_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    cache_file = os.path.join(cache_dir, 'meps_all-2014-2026.xml')
+    download_url = "https://raw.githubusercontent.com/stanjourdan/meps-dataset/main/meps_all-2014-2026.xml"
+    
+    try:
+        print("⬇️  Downloading MEP database from GitHub...")
+        response = requests.get(download_url, timeout=30)
+        response.raise_for_status()
+        
+        with open(cache_file, 'wb') as f:
+            f.write(response.content)
+        
+        print(f"✅ MEP database downloaded and cached")
+        return cache_file
+    except Exception as e:
+        print(f"⚠️  Download failed: {e}")
+        if os.path.exists(cache_file):
+            print(f"   Using existing cache as fallback")
+            return cache_file
+        return None
+
 def load_meps_database(filepath):
     print(f"📂 Loading {filepath}...")
     try:
@@ -134,20 +162,19 @@ def main(xml_urls=None, policy_priorities=None):
     
     # Configuration
     base_path = os.path.dirname(os.path.abspath(__file__))
-    meps_path = os.path.join(base_path, 'meps_all.xml')
     ollama_host = "http://localhost:11434"
-    
-    # Verify MEP database exists
-    if not os.path.exists(meps_path):
-        print(f"❌ ERROR: MEP database not found at {meps_path}")
-        print(f"   Please download from: https://www.europarl.europa.eu/meps/en/xml")
-        print(f"   Or update meps_path in the script to the correct location.")
-        return
     
     model_trans = "llama3.2:3b"  # TODO: Make configurable
     model_synthesis = "qwen2.5:3b"  # TODO: Make configurable
     model_reduce = "mistral:7b-instruct-v0.3-q4_K_M"  # TODO: Make configurable
 
+    # Get or download MEP database
+    print("📥 Setting up MEP database...")
+    meps_path = get_or_download_meps_database(base_path)
+    if not meps_path:
+        print(f"❌ ERROR: Could not obtain MEP database from GitHub")
+        return
+    
     meps_db = load_meps_database(meps_path)
     
     for i, xml_url in enumerate(xml_urls, 1):

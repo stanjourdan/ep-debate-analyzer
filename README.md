@@ -23,8 +23,11 @@ The pipeline requires these models running on your Ollama instance:
 - `qwen2.5:3b` - For synthesis if each MEP speech
 - `mistral:7b-instruct-v0.3-q4_K_M` - For detailed overall analysis
 
-### MEP Database 
-It was extracted (and cleaned up) from: https://www.europarl.europa.eu/meps/en/xml
+### MEP Database  
+
+- The MEPs database conatains about 1,700 MEPs from the period 2014-2026, including their names, political groups, and countries.
+- It is now automatically downloaded from this separate GitHub repository [stanjourdan/meps-dataset](https://github.com/stanjourdan/meps-dataset/blob/main/meps_all-2014-2026.xml) and cached locally.
+- The script will always attempt to fetch the latest version and fall back to the cache if the download fails.
 
 ## Setup
 
